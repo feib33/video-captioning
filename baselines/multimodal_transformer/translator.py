@@ -68,7 +68,7 @@ class Translator(object):
         beam = BeamSearch(
             beam_size,
             n_best=n_best,
-            batch_size=len(model_inputs["ctx_input_ids"]),
+            batch_size=len(model_inputs["ctx_tokens"]),
             pad=TVCaptionDataset.PAD,
             eos=TVCaptionDataset.EOS,
             bos=TVCaptionDataset.BOS,
@@ -86,10 +86,13 @@ class Translator(object):
                 model_inputs[k] = tile(v, beam_size, dim=0)  # (N * beam_size, L)
             return model_inputs
 
-        encoder_outputs = model.encode(model_inputs["ctx_input_ids"],
-                                       model_inputs["ctx_input_mask"],
-                                       model_inputs["ctx_token_type_ids"],
-                                       model_inputs["video_feature"])  # (N, Lv, D)
+        encoder_outputs = model.encode(model_inputs["sub_ids"],
+                                       model_inputs["sub_mask"],
+                                       model_inputs["sub_token_type_ids"],
+                                       model_inputs["video_feature"],
+                                       model_inputs["video_mask"],
+                                       model_inputs["video_token_type_ids"],
+                                       model_inputs["ctx_input_mask"])  # (N, Lv, D)
         model_inputs = dict(
             encoder_outputs=encoder_outputs,
             ctx_input_mask=model_inputs["ctx_input_mask"]
@@ -155,15 +158,18 @@ class Translator(object):
             after the `[EOS]` token with `[PAD]`. The replaced input_ids should be used to generate
             next memory state tensor.
         """
-        encoder_outputs = model.encode(model_inputs["ctx_input_ids"],
-                                       model_inputs["ctx_input_mask"],
-                                       model_inputs["ctx_token_type_ids"],
-                                       model_inputs["video_feature"])  # (N, Lv, D)
+        encoder_outputs = model.encode(model_inputs["sub_ids"],
+                                       model_inputs["sub_mask"],
+                                       model_inputs["sub_token_type_ids"],
+                                       model_inputs["video_feature"],
+                                       model_inputs["video_mask"],
+                                       model_inputs["video_token_type_ids"],
+                                       model_inputs["ctx_input_mask"])  # (N, Lv, D)
 
-        bsz = len(model_inputs["ctx_input_ids"])
+        bsz = len(model_inputs["ctx_tokens"])
         max_cap_len = max_cap_len
-        text_input_ids = model_inputs["ctx_input_ids"].new_zeros(bsz, max_cap_len)  # zeros
-        text_masks = model_inputs["ctx_input_ids"].new_zeros(bsz, max_cap_len).float()  # zeros
+        text_input_ids = model_inputs["ctx_tokens"].new_zeros(bsz, max_cap_len)  # zeros
+        text_masks = model_inputs["ctx_tokens"].new_zeros(bsz, max_cap_len).float()  # zeros
         next_symbols = torch.LongTensor([start_idx] * bsz)  # (N, )
         for dec_idx in range(max_cap_len):
             text_input_ids[:, dec_idx] = next_symbols

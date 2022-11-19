@@ -6,7 +6,7 @@ import numpy as np
 
 import h5py
 from torch.utils.data import Dataset
-from torch.utils.data.dataloader import default_collate
+from torch.utils.data.dataloader import default_collate, DataLoader
 from tqdm import tqdm
 
 from utils.basic_utils import load_json, load_jsonl, flat_list_of_lists, l2_normalize_np_array
@@ -39,6 +39,7 @@ class TVCaptionDataset(Dataset):
         self.ctx_mode = ctx_mode
         self.use_video = "video" in ctx_mode
         self.use_sub = "sub" in ctx_mode
+
         self.is_eval = is_eval
         self.data_ratio = data_ratio
         self.word2idx = load_json(word2idx_path)
@@ -67,7 +68,7 @@ class TVCaptionDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, index):
-        data, meta = self.convert_example_to_features(self.data[index])
+        data, meta = self.my_convert_example_to_features(self.data[index])
         return data, meta
 
     def convert_example_to_features(self, example):
@@ -153,7 +154,7 @@ class TVCaptionDataset(Dataset):
         sub_tokens, sub_mask = self._tokenize_and_pad_sentence(sub_sentences, max_sen_l=self.max_sub_len)
         return sub_tokens, sub_mask
 
-    def _load_indexed_video_feature(self, raw_feat, clip_st_ed):
+    def _load_indexed_video_feature(self, raw_feat, clip_st_ed, fuse_later):
         """ [CLS], [VID], ..., [VID], [SEP], [PAD], ..., [PAD],
         All non-PAD tokens are valid, will have a mask value of 1.
         Returns:
@@ -169,7 +170,10 @@ class TVCaptionDataset(Dataset):
             st = max(0, ed-1)
         indexed_feat_len = ed - st + 1
 
-        feat = np.zeros((self.max_v_len + self.max_sub_len, raw_feat.shape[1]))  # includes [CLS], [SEP]
+        if fuse_later:
+            feat = np.zeros((self.max_v_len, raw_feat.shape[1]))  # includes [CLS], [SEP]
+        else:
+            feat = np.zeros((self.max_v_len + self.max_sub_len, raw_feat.shape[1]))  # includes [CLS], [SEP]
         if indexed_feat_len > max_v_l:
             downsamlp_indices = np.linspace(st, ed, max_v_l, endpoint=True).astype(np.int).tolist()
             assert max(downsamlp_indices) < feat_len
@@ -189,7 +193,7 @@ class TVCaptionDataset(Dataset):
         return feat, video_tokens, mask
 
     def get_context(self, example):
-        """example single snetence
+        """example single sentence
         {"vid_name": str,
          "duration": float,
          "ts": [st(float), ed(float)],
@@ -204,7 +208,7 @@ class TVCaptionDataset(Dataset):
         # [CLS] [VID], ..., [VID], [PAD], ..., [PAD], [SEP], [BOS], [WORD], ..., [WORD], [EOS], [PAD], ...
         if self.use_video:
             video_feature = self.vid_h5[vid_name]  # (L, D)
-            video_feat, video_tokens, video_mask = self._load_indexed_video_feature(video_feature, clip_st_ed)
+            video_feat, video_tokens, video_mask = self._load_indexed_video_feature(video_feature, clip_st_ed, fuse_later=False)
         else:
             video_feat, video_tokens, video_mask = np.zeros((2+self.max_sub_len, 2)), [0, 0], [0, 0]  # fake inputs
         if self.use_sub:
@@ -213,11 +217,68 @@ class TVCaptionDataset(Dataset):
             sub_tokens, sub_mask = [0, 0], [0, 0]
 
         ctx_input_tokens = video_tokens + sub_tokens
-
         ctx_input_ids = [self.word2idx.get(t, self.word2idx[self.UNK_TOKEN]) for t in ctx_input_tokens]
         ctx_input_mask = video_mask + sub_mask
         ctx_token_type_ids = [0] * self.max_v_len + [1] * self.max_sub_len
         return ctx_input_ids, ctx_input_mask, ctx_token_type_ids, video_feat, video_mask
+
+    def my_convert_example_to_features(self, example):
+        """
+        {"vid_name": str,
+         "duration": float,
+         "ts": [st(float), ed(float)],
+         "desc": str,
+         "clip_id": str
+        }
+        """
+        vid_feat, vid_mask, vid_token_type_ids, sub_ids, sub_mask, sub_token_type_ids, \
+                            ctx_input_mask, ctx_tokens = self.my_get_context(example)
+        if self.is_eval:
+            caption_input_ids = [0, 0]
+            caption_mask = [0, 0]
+            caption_labels = [-1, -1]
+        else:
+            caption_input_ids, caption_mask = self.get_caption(example)
+            # shifted right, `-1` is ignored when calculating CrossEntropy Loss
+            caption_labels = [self.IGNORE if m == 0 else tid
+                              for tid, m in zip(caption_input_ids, caption_mask)][1:] + [self.IGNORE]
+
+        data = dict(
+            caption_input_ids=np.array(caption_input_ids).astype(np.int64),
+            caption_mask=np.array(caption_mask).astype(np.float32),
+            caption_labels=np.array(caption_labels).astype(np.int64),
+            sub_ids=np.array(sub_ids).astype(np.int64),
+            sub_mask=np.array(sub_mask).astype(np.float32),
+            sub_token_type_ids=np.array(sub_token_type_ids).astype(np.int64),
+            video_mask=np.array(vid_mask).astype(np.float32),
+            video_token_type_ids=np.array(vid_token_type_ids).astype(np.int64),
+            video_feature=vid_feat.astype(np.float32),
+            ctx_input_mask=np.array(ctx_input_mask).astype(np.float32),
+            ctx_tokens=np.array(ctx_tokens).astype(np.int64)
+        )
+        meta = example
+        return data, meta
+
+
+    def my_get_context(self, example):
+        vid_name = example["vid_name"]
+        clip_st_ed = example["clip_st_ed"]
+
+        # video + text tokens
+        # [CLS] [VID], ..., [VID], [PAD], ..., [PAD], [SEP], [BOS], [WORD], ..., [WORD], [EOS], [PAD], ...
+
+        video_feature = self.vid_h5[vid_name]  # (L, D)
+        video_feat, video_tokens, video_mask = self._load_indexed_video_feature(video_feature, clip_st_ed, fuse_later=True)
+
+        sub_tokens, sub_mask = self._load_indexed_sub(self.sub_meta_dict[vid_name], clip_st_ed)
+        ctx_tokens = video_tokens + sub_tokens
+        sub_ids = [self.word2idx.get(t, self.word2idx[self.UNK_TOKEN]) for t in sub_tokens]
+        ctx_tokens = [self.word2idx.get(t, self.word2idx[self.UNK_TOKEN]) for t in ctx_tokens]
+        vid_token_type_ids = [0] * self.max_v_len
+        sub_token_type_ids = [1] * self.max_sub_len
+        ctx_input_mask = video_mask + sub_mask
+        return video_feat, video_mask, vid_token_type_ids, sub_ids, sub_mask, sub_token_type_ids, ctx_input_mask, ctx_tokens
+
 
     def get_caption(self, example):
         """example: """
@@ -321,3 +382,53 @@ def load_process_sub_meta(sub_meta_path, clip_length):
         sub_info["clip2sen"] = process_single_vid_sub(sub_info["sub"], clip_length)
         video2sub[vid_name] = sub_info
     return video2sub
+
+"""
+train_dataset = TVCaptionDataset(
+        ctx_mode="video_sub",
+        data_ratio=1,
+        data_path="/home/feib/TVCaption/data/tvc_train_release.jsonl",
+        sub_meta_path="/home/feib/TVCaption/data/tvqa_preprocessed_subtitles.jsonl",
+        vid_h5_path_or_handler="/home/feib/TVCaption/data/tvc_feature_release/video_feature/tvr_i3d_rgb600_avg_cl-1.5.h5",
+        word2idx_path="/home/feib/TVCaption/cache/tvc_word2idx.json",
+        max_cap_len=20,
+        max_sub_len=30,
+        max_v_len=20,
+        h5driver="core",
+        clip_length=1.5,
+        normalize_vfeat=False,
+        is_eval=False
+    )
+train_loader = DataLoader(train_dataset,
+                              collate_fn=caption_collate,
+                              batch_size=1,
+                              shuffle=False,
+                              num_workers=0,
+                              pin_memory=False)
+
+for batch in train_loader:
+    data = batch[0]
+    vid_feat = data["video_feature"]
+    vid_mask = data["video_mask"]
+    vid_token_type_ids = data["video_token_type_ids"]
+    sub_ids = data["sub_ids"]
+    sub_mask = data["sub_mask"]
+    sub_token_type_ids = data["sub_token_type_ids"]
+    print vid_feat.shape, vid_mask.shape, vid_token_type_ids.shape
+    print sub_ids.shape, sub_mask.shape, sub_token_type_ids.shape
+    break
+"""
+"""
+video-sub
+---------------
+sub       video          token_types_id      input_mask
+(1, 50)   (1, 50, 1024)     (1, 50)           (1, 50)
+
+video
+---------------
+(1, 22)   (1, 22, 1024)     (1, 22)           (1, 22)
+
+sub
+--------------
+(1, 32)   (1, 32, 2)        (1, 32)           (1, 32)
+ """

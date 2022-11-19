@@ -49,7 +49,7 @@ def train_epoch(model, training_data, optimizer, opt, epoch):
     for batch_idx, batch in tqdm(enumerate(training_data), mininterval=2,
                                  desc="  Training =>", total=len(training_data)):
         niter = epoch * len(training_data) + batch_idx
-        # prepare data
+        # put data on device
         model_inputs = prepare_batch_inputs(batch[0], device=opt.device, non_blocking=opt.pin_memory)
         # forward & backward
         optimizer.zero_grad()
@@ -304,7 +304,7 @@ def get_args():
     opt.h5driver = None if opt.no_core_driver else "core"
     opt.num_workers = 1 if opt.no_core_driver else opt.num_workers
     opt.pin_memory = not opt.no_pin_memory
-    opt.device = torch.device("cuda:0" if opt.device >= 0 else "cpu")
+    opt.device = torch.device("cuda:1" if opt.device >= 0 else "cpu")
 
     if opt.vid_feat_size > 3000:  # 3072, the normalized concatenation of resnet+i3d
         assert opt.no_norm_vfeat

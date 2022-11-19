@@ -4,6 +4,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from easydict import EasyDict as edict
 import logging
+from tqdm import tqdm
+
+from baselines.multimodal_transformer.transformer.tvc_dataset import TVCaptionDataset
+from torch.utils.data import DataLoader
+from baselines.multimodal_transformer.transformer.tvc_dataset import \
+    caption_collate, prepare_batch_inputs
 logger = logging.getLogger(__name__)
 
 
@@ -53,14 +59,7 @@ def gelu(x):
 class PositionEncoding(nn.Module):
     """
     Add positional information to input tensor.
-    :Examples:
-        >>> model = PositionEncoding(d_model=6, max_len=10, dropout=0)
-        >>> test_input1 = torch.zeros(3, 10, 6)
-        >>> output1 = model(test_input1)
-        >>> output1.size()
-        >>> test_input2 = torch.zeros(5, 3, 9, 6)
-        >>> output2 = model(test_input2)
-        >>> output2.size()
+
     """
 
     def __init__(self, n_filters=128, max_len=500):
@@ -203,6 +202,16 @@ class BertAttention(nn.Module):
         attention_output = self.output(self_output, input_tensor)
         return attention_output
 
+class BertCrossAttention(nn.Module):
+    def __init__(self, config):
+        super(BertCrossAttention, self).__init__()
+        self.self = BertSelfAttention(config)
+        self.output = BertSelfOutput(config)
+
+    def forward(self, q_tensor, input_tensor, attention_mask):  #  attention_mask = q_tensor's mask???
+        self_output = self.self(q_tensor, input_tensor, input_tensor, attention_mask)
+        attention_output = self.output(self_output, q_tensor)  # q_tensor here should be defined later ??? @feib
+        return attention_output
 
 class BertIntermediate(nn.Module):
     def __init__(self, config):
@@ -278,7 +287,7 @@ class BertEmbeddingsWithVideo(nn.Module):
         words_embeddings = self.position_embeddings(words_embeddings)
         return words_embeddings  # (N, Lt, D)
 
-    def forward(self, input_ids, video_features, token_type_ids):
+    def forward(self, video_feature, vid_token_type_ids, sub_ids, word_token_type_ids):
         """
         Args:
             input_ids: (N, L)
@@ -288,16 +297,37 @@ class BertEmbeddingsWithVideo(nn.Module):
         Returns:
 
         """
-        words_embeddings = self.word_fc(self.word_embeddings(input_ids))
-        video_embeddings = self.video_embeddings(video_features)
-        token_type_embeddings = self.token_type_embeddings(token_type_ids)
+        words_embeddings = self.word_fc(self.word_embeddings(sub_ids))
+        video_embeddings = self.video_embeddings(video_feature)
+        word_token_type_embeddings = self.token_type_embeddings(word_token_type_ids)
+        vid_token_type_embeddings = self.token_type_embeddings(vid_token_type_ids)
 
-        embeddings = words_embeddings + video_embeddings + token_type_embeddings
-        embeddings = self.position_embeddings(embeddings)
+        sub_embeddings = words_embeddings + word_token_type_embeddings
+        vid_embeddings = video_embeddings + vid_token_type_embeddings
 
-        embeddings = self.LayerNorm(embeddings)
-        embeddings = self.dropout(embeddings)
-        return embeddings  # (N, L, D)
+
+
+        sub_embeddings = self.dropout(self.LayerNorm(self.position_embeddings(sub_embeddings)))
+        vid_embeddings = self.dropout(self.LayerNorm(self.position_embeddings(vid_embeddings)))
+
+        return vid_embeddings, sub_embeddings
+
+
+class BertLayerNoMemoryUnitedCross(nn.Module):
+    def __init__(self, config):
+        super(BertLayerNoMemoryUnitedCross, self).__init__()
+        self.config = config
+        self.attention = BertCrossAttention(config)
+        self.hidden_intermediate = BertIntermediate(config)
+        self.output = BertOutput(config)
+
+    def forward(self, q_hidden_state, hidden_states, attention_mask, diagonal_mask=False):
+
+        self_attention_mask = attention_mask.unsqueeze(1)
+        attention_output = self.attention(q_hidden_state, hidden_states, self_attention_mask)  # (N, L, D)
+        intermediate_output = self.hidden_intermediate(attention_output)  # (N, L, D)
+        layer_output = self.output(intermediate_output, attention_output)  # (N, L, D)
+        return layer_output
 
 
 class BertLayerNoMemoryUntied(nn.Module):
@@ -332,9 +362,10 @@ class BertLayerNoMemoryUntied(nn.Module):
 class BertEncoderNoMemoryUntied(nn.Module):
     def __init__(self, config):
         super(BertEncoderNoMemoryUntied, self).__init__()
-        self.layer = nn.ModuleList([BertLayerNoMemoryUntied(config) for _ in range(config.num_hidden_layers)])
+        self.mul_stream_layer = nn.ModuleList([BertLayerNoMemoryUntied(config), BertLayerNoMemoryUntied(config)])
+        self.sin_stream_layer = nn.ModuleList([BertLayerNoMemoryUntied(config) for _ in range(config.num_hidden_layers-1)])
 
-    def forward(self, hidden_states, attention_mask, diagonal_mask=False, output_all_encoded_layers=True):
+    def forward(self, sub, sub_mask, vid, vid_mask, attention_mask, diagonal_mask=False, output_all_encoded_layers=True):
         """
         Args:
             hidden_states: (N, L, D)
@@ -346,7 +377,12 @@ class BertEncoderNoMemoryUntied(nn.Module):
 
         """
         all_encoder_layers = []
-        for layer_idx, layer_module in enumerate(self.layer):
+        vid_output = self.mul_stream_layer[0](vid, vid_mask, diagonal_mask)
+        sub_output = self.mul_stream_layer[1](sub, sub_mask, diagonal_mask)
+        #print "vid_output and sub_output is: ", vid_output.shape, sub_output.shape
+        hidden_states = torch.cat((vid_output, sub_output), 1)
+        #print "output of first layer", hidden_states.shape
+        for layer_idx, layer_module in enumerate(self.sin_stream_layer):
             hidden_states = layer_module(hidden_states, attention_mask, diagonal_mask)
             if output_all_encoded_layers:
                 all_encoder_layers.append(hidden_states)
@@ -504,7 +540,7 @@ class MMT(nn.Module):
         if isinstance(module, nn.Linear) and module.bias is not None:
             module.bias.data.zero_()
 
-    def encode(self, ctx_input_ids, ctx_input_mask, ctx_token_type_ids, video_feature):
+    def encode(self, sub_ids, sub_mask, sub_token_type_ids, vid_feature, vid_mask, vid_token_type_ids, ctx_input_mask):
         """
         Args:
             ctx_input_ids: (N, Lctx)
@@ -512,8 +548,9 @@ class MMT(nn.Module):
             ctx_token_type_ids: (N, Lctx) with 0 indicates [VID]
             video_feature: (N, Lctx, D)
         """
-        ctx_embeddings = self.embeddings(ctx_input_ids, video_feature, ctx_token_type_ids)  # (N, Lctx, D)
-        encoder_outputs = self.encoder(ctx_embeddings, ctx_input_mask, diagonal_mask=False)[-1]  # (N, Lctx, D)
+        vid_embedding, sub_embedding = self.embeddings(vid_feature, vid_token_type_ids, sub_ids, sub_token_type_ids)
+
+        encoder_outputs = self.encoder(sub_embedding, sub_mask, vid_embedding, vid_mask, ctx_input_mask, diagonal_mask=False)[-1]  # (N, Lctx, D)
         return encoder_outputs
 
     def decode(self, text_input_ids, text_masks, encoder_outputs, encoder_masks, text_input_labels=None):
@@ -535,8 +572,9 @@ class MMT(nn.Module):
                                           text_input_labels.view(-1))
         return caption_loss, prediction_scores
 
-    def forward(self, ctx_input_ids, ctx_input_mask, ctx_token_type_ids, video_feature,
-                caption_input_ids, caption_mask, caption_labels):
+    def forward(self, caption_input_ids, caption_mask, caption_labels,
+                sub_ids, sub_mask, sub_token_type_ids,
+                video_feature, video_mask, video_token_type_ids, ctx_input_mask, ctx_tokens):
         """
         Args:
             ctx_input_ids: (N, Lctx)  with 1 indicates valid bits
@@ -547,7 +585,7 @@ class MMT(nn.Module):
             caption_mask: (N, Lt)  with 1 indicates valid bits
             caption_labels: (N, Lt)  with `-1` on ignored positions
         """
-        encoder_outputs = self.encode(ctx_input_ids, ctx_input_mask, ctx_token_type_ids, video_feature)  # (N, Lv, D)
+        encoder_outputs = self.encode(sub_ids, sub_mask, sub_token_type_ids, video_feature, video_mask, video_token_type_ids, ctx_input_mask)  # (N, Lv, D)
         caption_loss, prediction_scores = self.decode(caption_input_ids, caption_mask,
                                                       encoder_outputs, ctx_input_mask, text_input_labels=caption_labels)
         return caption_loss, prediction_scores
@@ -568,3 +606,78 @@ base_config = edict(
     num_attention_heads=12,
     memory_dropout_prob=0.1
 )
+
+
+"""
+########################################################################
+train_dataset = TVCaptionDataset(
+        ctx_mode="video_sub",
+        data_ratio=1,
+        data_path="/home/feib/TVCaption/data/tvc_train_release.jsonl",
+        sub_meta_path="/home/feib/TVCaption/data/tvqa_preprocessed_subtitles.jsonl",
+        vid_h5_path_or_handler="/home/feib/TVCaption/data/tvc_feature_release/video_feature/tvr_i3d_rgb600_avg_cl-1.5.h5",
+        word2idx_path="/home/feib/TVCaption/cache/tvc_word2idx.json",
+        max_cap_len=20,
+        max_sub_len=30,
+        max_v_len=20,
+        h5driver="core",
+        clip_length=1.5,
+        normalize_vfeat=False,
+        is_eval=False
+    )
+train_loader = DataLoader(train_dataset,
+                              collate_fn=caption_collate,
+                              batch_size=1,
+                              shuffle=False,
+                              num_workers=0,
+                              pin_memory=False)
+vocab_size = len(train_dataset.word2idx)
+rt_config = edict(
+        hidden_size=768,
+        intermediate_size=768,  # after each self attention
+        vocab_size=vocab_size,  # get from word2idx
+        word_vec_size=300,
+        video_feature_size=1024,
+        max_position_embeddings=50,  # get from max_seq_len
+        type_vocab_size=2,
+        layer_norm_eps=1e-12,  # bert layernorm
+        hidden_dropout_prob=0.1,  # applies everywhere except attention
+        num_hidden_layers=2,  # number of transformer layers
+        num_attention_heads=12,
+        attention_probs_dropout_prob=0.1,  # applies only to self attention
+        initializer_range=0.02,
+        label_smoothing=0.1,
+        share_wd_cls_weight=False
+    )
+
+
+model = MMT(rt_config)
+model.to("cuda:1")
+
+for batch_idx, batch in tqdm(enumerate(train_loader)):
+    data = prepare_batch_inputs(batch[0],device="cuda:1")
+    vid_feat = data["video_feature"]
+    vid_mask = data["video_mask"]
+    vid_token_type_ids = data["video_token_type_ids"]
+    sub_ids = data["sub_ids"]
+    sub_mask = data["sub_mask"]
+    sub_token_type_ids = data["sub_token_type_ids"]
+    print vid_feat.shape, vid_mask.shape, vid_token_type_ids.shape
+    print sub_ids.shape, sub_mask.shape, sub_token_type_ids.shape
+    loss, pred_scores = model(**data)
+    print loss, pred_scores
+    break
+"""
+"""
+video-sub
+-------------
+shape of output from encoder: (50, 768)
+
+video
+------------
+shape of output from encoder: (22, 768)
+
+sub
+------------
+shape of output from encoder: (32, 768)
+"""

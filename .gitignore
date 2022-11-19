@@ -46,3 +46,9 @@ data_to_ignore
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# @feib
+data/tvc_feature_release/*
+idea.txt
+playground.py
+results_comparison.txt
