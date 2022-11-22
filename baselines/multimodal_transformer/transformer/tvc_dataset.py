@@ -387,13 +387,13 @@ def load_process_sub_meta(sub_meta_path, clip_length):
 train_dataset = TVCaptionDataset(
         ctx_mode="video_sub",
         data_ratio=1,
-        data_path="/home/feib/TVCaption/data/tvc_train_release.jsonl",
-        sub_meta_path="/home/feib/TVCaption/data/tvqa_preprocessed_subtitles.jsonl",
-        vid_h5_path_or_handler="/home/feib/TVCaption/data/tvc_feature_release/video_feature/tvr_i3d_rgb600_avg_cl-1.5.h5",
-        word2idx_path="/home/feib/TVCaption/cache/tvc_word2idx.json",
+        data_path="/home/feib/project_test/Cross-Att-TVCaption/data/tvc_train_release.jsonl",
+        sub_meta_path="/home/feib/project_test/Cross-Att-TVCaption/data/tvqa_preprocessed_subtitles.jsonl",
+        vid_h5_path_or_handler="/home/feib/project_test/Cross-Att-TVCaption/data/tvc_feature_release/video_feature/tvr_i3d_rgb600_avg_cl-1.5.h5",
+        word2idx_path="/home/feib/project_test/Cross-Att-TVCaption/cache/tvc_word2idx.json",
         max_cap_len=20,
         max_sub_len=30,
-        max_v_len=20,
+        max_v_len=30,
         h5driver="core",
         clip_length=1.5,
         normalize_vfeat=False,
@@ -414,8 +414,8 @@ for batch in train_loader:
     sub_ids = data["sub_ids"]
     sub_mask = data["sub_mask"]
     sub_token_type_ids = data["sub_token_type_ids"]
-    print vid_feat.shape, vid_mask.shape, vid_token_type_ids.shape
-    print sub_ids.shape, sub_mask.shape, sub_token_type_ids.shape
+    print(vid_feat.shape, vid_mask.shape, vid_token_type_ids.shape)
+    print(sub_ids.shape, sub_mask.shape, sub_token_type_ids.shape)
     break
 """
 """

@@ -86,7 +86,7 @@ class Translator(object):
                 model_inputs[k] = tile(v, beam_size, dim=0)  # (N * beam_size, L)
             return model_inputs
 
-        encoder_outputs = model.encode(model_inputs["sub_ids"],
+        enc_output_v, enc_output_s = model.encode(model_inputs["sub_ids"],
                                        model_inputs["sub_mask"],
                                        model_inputs["sub_token_type_ids"],
                                        model_inputs["video_feature"],
@@ -94,7 +94,8 @@ class Translator(object):
                                        model_inputs["video_token_type_ids"],
                                        model_inputs["ctx_input_mask"])  # (N, Lv, D)
         model_inputs = dict(
-            encoder_outputs=encoder_outputs,
+            enc_output_v=enc_output_v,
+            enc_output_s=enc_output_s,
             ctx_input_mask=model_inputs["ctx_input_mask"]
         )
         model_inputs = duplicate_for_beam(model_inputs, beam_size=beam_size)
@@ -102,14 +103,21 @@ class Translator(object):
         bsz = len(model_inputs["encoder_outputs"])
         text_input_ids = model_inputs["encoder_outputs"].new_zeros(bsz, max_length).long()  # zeros
         text_masks = model_inputs["ctx_input_mask"].new_zeros(bsz, max_length)  # zeros
-        encoder_outputs = model_inputs["encoder_outputs"]
-        encoder_masks = model_inputs["ctx_input_mask"]
+        enc_output_v = model_inputs["enc_output_v"]
+        v_mask = model_inputs["v_mask"]
+        enc_output_s = model_inputs["enc_output_s"]
+        s_mask = model_inputs["s_mask"]
 
         for dec_idx in range(max_length):
             text_input_ids[:, dec_idx] = beam.current_predictions
             text_masks[:, dec_idx] = 1
+            """
             _, pred_scores = model.decode(
                 text_input_ids, text_masks, encoder_outputs, encoder_masks, text_input_labels=None)
+            """
+            _, pred_scores = model.decode(
+                text_input_ids, text_masks, enc_output_v, v_mask, enc_output_s,
+                s_mask, text_input_labels=None)
 
             pred_scores[:, TVCaptionDataset.UNK] = -1e10  # remove `[UNK]` token
             logprobs = torch.log(F.softmax(pred_scores[:, dec_idx], dim=1))  # (N * beam_size, vocab_size)
@@ -158,7 +166,7 @@ class Translator(object):
             after the `[EOS]` token with `[PAD]`. The replaced input_ids should be used to generate
             next memory state tensor.
         """
-        encoder_outputs = model.encode(model_inputs["sub_ids"],
+        enc_output_v, enc_output_s= model.encode(model_inputs["sub_ids"],
                                        model_inputs["sub_mask"],
                                        model_inputs["sub_token_type_ids"],
                                        model_inputs["video_feature"],
@@ -175,7 +183,8 @@ class Translator(object):
             text_input_ids[:, dec_idx] = next_symbols
             text_masks[:, dec_idx] = 1
             _, pred_scores = model.decode(
-                text_input_ids, text_masks, encoder_outputs, model_inputs["ctx_input_mask"], text_input_labels=None)
+                text_input_ids, text_masks, enc_output_v, model_inputs["video_mask"],
+                enc_output_s, model_inputs["sub_mask"], text_input_labels=None)
             # suppress unk token; (N, L, vocab_size)
             pred_scores[:, :, unk_idx] = -1e10
             next_words = pred_scores[:, dec_idx].max(1)[1]
