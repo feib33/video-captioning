@@ -102,6 +102,12 @@ def main():
     parser.add_argument("-no_cuda", action="store_true")
     parser.add_argument("-seed", default=2019, type=int)
     parser.add_argument("-debug", action="store_true")
+    parser.add_argument("-fusion_pos", type=str, choices=["encoder", "decoder"], default="encoder",
+                        help="Choose one of fusion postion: 'encoder' - fuse multi-modalities at encoder side"
+                             "'decoder' - fuse multi-modalities at decoder side")
+    parser.add_argument("-model_name", type=str, choices=["2to1stream_self", "2streams_self", "2to1stream_cross",
+                                                          "2streams_cross", "2streams_dec"])
+    parser.add_argument("-memo", type=str, default="default")
 
     opt = parser.parse_args()
     opt.cuda = not opt.no_cuda
@@ -129,7 +135,7 @@ def main():
     eval_data_loader = get_data_loader(opt)
 
     # setup model
-    translator = Translator(opt, checkpoint)
+    translator = Translator(opt, checkpoint, fusion_pos=opt.fusion_pos)
 
     pred_file = os.path.join(opt.res_dir, "{}_pred_{}.jsonl".format(decoding_strategy, opt.eval_split_name))
     pred_file = os.path.abspath(pred_file)

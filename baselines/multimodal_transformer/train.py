@@ -92,7 +92,7 @@ def eval_language_metrics(checkpoint, eval_data_loader, opt, model=None, eval_mo
     1, Get METEOR, BLEU1-4, CIDEr scores
     2, Get vocab size, sentence length
     """
-    translator = Translator(opt, checkpoint, model=model)
+    translator = Translator(opt, checkpoint, fusion_pos=opt.fusion_pos, model=model)
     json_res = run_translate(eval_data_loader, translator, opt=opt)
     res_filepath = os.path.abspath(opt.save_model + "_tmp_greedy_pred_{}.json".format(eval_mode))
     save_jsonl(json_res, res_filepath)
@@ -275,14 +275,24 @@ def get_args():
                               "ref: https://discuss.pytorch.org/t/should-we-set-non-blocking-to-true/38234/4")
     parser.add_argument("-seed", default=2019, type=int)
     parser.add_argument("-debug", action="store_true")
+    parser.add_argument("-fusion_pos", type=str, choices=["encoder", "decoder"], default="encoder",
+                        help="Choose one of fusion postion: 'encoder' - fuse multi-modalities at encoder side"
+                             "'decoder' - fuse multi-modalities at decoder side")
+    parser.add_argument("-model_name", type=str, choices=["2to1stream_self", "2streams_self", "2to1stream_cross",
+                                                         "2streams_cross", "2streams_dec"])
+    parser.add_argument("-memo", type=str, default="default")
 
     opt = parser.parse_args()
+
+    if opt.model_name == "2streams_dec":
+        opt.fusion_pos = "decoder"
+
     # make paths
     if opt.debug:
         opt.res_root_dir = os.path.sep.join(opt.res_root_dir.split(os.path.sep)[:-1] + ["debug_results", ])
 
     opt.res_dir = os.path.join(opt.res_root_dir,
-                               "-".join([opt.ctx_mode, opt.exp_id, time.strftime("%Y_%m_%d_%H_%M_%S")]))
+                               "-".join([opt.model_name, opt.memo]))
 
     if os.path.exists(opt.res_dir):
         raise ValueError("File exists {}".format(opt.res_dir))
@@ -382,7 +392,8 @@ def main():
         attention_probs_dropout_prob=opt.attention_probs_dropout_prob,  # applies only to self attention
         initializer_range=opt.initializer_range,
         label_smoothing=opt.label_smoothing,
-        share_wd_cls_weight=opt.share_wd_cls_weight
+        share_wd_cls_weight=opt.share_wd_cls_weight,
+        model_name=opt.model_name
     )
     model = MMT(rt_config)
 

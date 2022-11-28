@@ -49,7 +49,7 @@ def mask_tokens_after_eos(input_ids, input_masks,
 
 class Translator(object):
     """Load with trained model and handle the beam search"""
-    def __init__(self, opt, checkpoint, model=None):
+    def __init__(self, opt, checkpoint, fusion_pos, model=None):
         self.opt = opt
         self.device = opt.device
 
@@ -60,6 +60,8 @@ class Translator(object):
             model.load_state_dict(checkpoint["model"])
         print("[Info] Trained model state loaded.")
         self.model = model
+        assert fusion_pos in ["encoder", "decoder"], "fusion position must be encoder or decoder"
+        self.fusion_pos = fusion_pos
         self.model.eval()
 
     def translate_batch_beam(self, model_inputs, model,
@@ -86,38 +88,58 @@ class Translator(object):
                 model_inputs[k] = tile(v, beam_size, dim=0)  # (N * beam_size, L)
             return model_inputs
 
-        enc_output_v, enc_output_s = model.encode(model_inputs["sub_ids"],
-                                       model_inputs["sub_mask"],
-                                       model_inputs["sub_token_type_ids"],
-                                       model_inputs["video_feature"],
-                                       model_inputs["video_mask"],
-                                       model_inputs["video_token_type_ids"],
-                                       model_inputs["ctx_input_mask"])  # (N, Lv, D)
-        model_inputs = dict(
-            enc_output_v=enc_output_v,
-            enc_output_s=enc_output_s,
-            ctx_input_mask=model_inputs["ctx_input_mask"]
-        )
+        if self.fusion_pos == "decoder":
+            enc_output_v, enc_output_s = model.encode(model_inputs["sub_ids"],
+                                                      model_inputs["sub_mask"],
+                                                      model_inputs["sub_token_type_ids"],
+                                                      model_inputs["video_feature"],
+                                                      model_inputs["video_mask"],
+                                                      model_inputs["video_token_type_ids"],
+                                                      model_inputs["ctx_input_mask"])  # (N, Lv, D)
+            encoder_outputs = torch.cat((enc_output_v, enc_output_s), 1)
+            model_inputs = dict(
+                enc_output_v=enc_output_v,
+                enc_output_s=enc_output_s,
+                encoder_outputs=encoder_outputs,
+                ctx_input_mask=model_inputs["ctx_input_mask"],
+                video_mask=model_inputs["video_mask"],
+                sub_mask=model_inputs["sub_mask"]
+            )
+        elif self.fusion_pos == "encoder":
+            encoder_outputs = model.encode(model_inputs["sub_ids"],
+                                           model_inputs["sub_mask"],
+                                           model_inputs["sub_token_type_ids"],
+                                           model_inputs["video_feature"],
+                                           model_inputs["video_mask"],
+                                           model_inputs["video_token_type_ids"],
+                                           model_inputs["ctx_input_mask"])
+            model_inputs = dict(
+                encoder_outputs=encoder_outputs,
+                ctx_input_mask=model_inputs["ctx_input_mask"]
+            )
         model_inputs = duplicate_for_beam(model_inputs, beam_size=beam_size)
 
         bsz = len(model_inputs["encoder_outputs"])
         text_input_ids = model_inputs["encoder_outputs"].new_zeros(bsz, max_length).long()  # zeros
         text_masks = model_inputs["ctx_input_mask"].new_zeros(bsz, max_length)  # zeros
-        enc_output_v = model_inputs["enc_output_v"]
-        v_mask = model_inputs["v_mask"]
-        enc_output_s = model_inputs["enc_output_s"]
-        s_mask = model_inputs["s_mask"]
+        if self.fusion_pos == "decoder":
+            enc_output_v = model_inputs["enc_output_v"]
+            v_mask = model_inputs["video_mask"]
+            enc_output_s = model_inputs["enc_output_s"]
+            s_mask = model_inputs["sub_mask"]
+        elif self.fusion_pos == "encoder":
+            encoder_outputs = model_inputs["encoder_outputs"]
+            encoder_masks = model_inputs["ctx_input_mask"]
 
         for dec_idx in range(max_length):
             text_input_ids[:, dec_idx] = beam.current_predictions
             text_masks[:, dec_idx] = 1
-            """
-            _, pred_scores = model.decode(
-                text_input_ids, text_masks, encoder_outputs, encoder_masks, text_input_labels=None)
-            """
-            _, pred_scores = model.decode(
-                text_input_ids, text_masks, enc_output_v, v_mask, enc_output_s,
-                s_mask, text_input_labels=None)
+            if self.fusion_pos == "decoder":
+                _, pred_scores = model.decode_lf(
+                    text_input_ids, text_masks, enc_output_v, v_mask, enc_output_s, s_mask, text_input_labels=None)
+            elif self.fusion_pos == "encoder":
+                _, pred_scores = model.decode(
+                    text_input_ids, text_masks, encoder_outputs, encoder_masks, text_input_labels=None)
 
             pred_scores[:, TVCaptionDataset.UNK] = -1e10  # remove `[UNK]` token
             logprobs = torch.log(F.softmax(pred_scores[:, dec_idx], dim=1))  # (N * beam_size, vocab_size)
@@ -155,6 +177,7 @@ class Translator(object):
             cls,
             model_inputs,
             model,
+            fusion_pos,
             start_idx=TVCaptionDataset.BOS,
             unk_idx=TVCaptionDataset.UNK,
             max_cap_len=None):
@@ -166,25 +189,61 @@ class Translator(object):
             after the `[EOS]` token with `[PAD]`. The replaced input_ids should be used to generate
             next memory state tensor.
         """
-        enc_output_v, enc_output_s= model.encode(model_inputs["sub_ids"],
-                                       model_inputs["sub_mask"],
-                                       model_inputs["sub_token_type_ids"],
-                                       model_inputs["video_feature"],
-                                       model_inputs["video_mask"],
-                                       model_inputs["video_token_type_ids"],
-                                       model_inputs["ctx_input_mask"])  # (N, Lv, D)
+        if fusion_pos == "decoder":
+            enc_output_v, enc_output_s = model.encode(model_inputs["sub_ids"],
+                                                      model_inputs["sub_mask"],
+                                                      model_inputs["sub_token_type_ids"],
+                                                      model_inputs["video_feature"],
+                                                      model_inputs["video_mask"],
+                                                      model_inputs["video_token_type_ids"],
+                                                      model_inputs["ctx_input_mask"])  # (N, Lv, D)
+            encoder_outputs = torch.cat((enc_output_v, enc_output_s), 1)
+            model_inputs = dict(
+                enc_output_v=enc_output_v,
+                enc_output_s=enc_output_s,
+                encoder_outputs=encoder_outputs,
+                ctx_input_mask=model_inputs["ctx_input_mask"],
+                ctx_tokens=model_inputs["ctx_tokens"],
+                video_mask=model_inputs["video_mask"],
+                sub_mask=model_inputs["sub_mask"]
+            )
+        elif fusion_pos == "encoder":
+            encoder_outputs = model.encode(model_inputs["sub_ids"],
+                                           model_inputs["sub_mask"],
+                                           model_inputs["sub_token_type_ids"],
+                                           model_inputs["video_feature"],
+                                           model_inputs["video_mask"],
+                                           model_inputs["video_token_type_ids"],
+                                           model_inputs["ctx_input_mask"])
+            model_inputs = dict(
+                encoder_outputs=encoder_outputs,
+                ctx_input_mask=model_inputs["ctx_input_mask"],
+                ctx_tokens=model_inputs["ctx_tokens"]
+            )
 
         bsz = len(model_inputs["ctx_tokens"])
         max_cap_len = max_cap_len
         text_input_ids = model_inputs["ctx_tokens"].new_zeros(bsz, max_cap_len)  # zeros
         text_masks = model_inputs["ctx_tokens"].new_zeros(bsz, max_cap_len).float()  # zeros
         next_symbols = torch.LongTensor([start_idx] * bsz)  # (N, )
+        if fusion_pos == "decoder":
+            enc_output_v = model_inputs["enc_output_v"]
+            v_mask = model_inputs["video_mask"]
+            enc_output_s = model_inputs["enc_output_s"]
+            s_mask = model_inputs["sub_mask"]
+        elif fusion_pos == "encoder":
+            encoder_outputs = model_inputs["encoder_outputs"]
+            encoder_masks = model_inputs["ctx_input_mask"]
+
         for dec_idx in range(max_cap_len):
             text_input_ids[:, dec_idx] = next_symbols
             text_masks[:, dec_idx] = 1
-            _, pred_scores = model.decode(
-                text_input_ids, text_masks, enc_output_v, model_inputs["video_mask"],
-                enc_output_s, model_inputs["sub_mask"], text_input_labels=None)
+            if  fusion_pos == "decoder":
+                _, pred_scores = model.decode_lf(
+                    text_input_ids, text_masks, enc_output_v, v_mask, enc_output_s, s_mask, text_input_labels=None)
+            elif fusion_pos == "encoder":
+                _, pred_scores = model.decode(
+                    text_input_ids, text_masks, encoder_outputs, encoder_masks, text_input_labels=None)
             # suppress unk token; (N, L, vocab_size)
             pred_scores[:, :, unk_idx] = -1e10
             next_words = pred_scores[:, dec_idx].max(1)[1]
@@ -203,4 +262,4 @@ class Translator(object):
                                              length_penalty_alpha=self.opt.length_penalty_alpha)
         else:
             return self.translate_batch_single_sentence_untied_greedy(
-                model_inputs, self.model, max_cap_len=max_cap_len)
+                model_inputs, self.model, self.fusion_pos, max_cap_len=max_cap_len)
