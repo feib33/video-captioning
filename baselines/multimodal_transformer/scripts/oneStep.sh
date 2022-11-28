@@ -67,6 +67,10 @@ do
     -res_root_dir ${results_root} \
     -model_name ${name} \
     -no_norm_vfeat
+done
+
+for name in "${model_names[@]}"
+do
     echo "Validating time for model ${name}"
     python baselines/multimodal_transformer/translate.py \
     -res_dir=${results_root}/${name}-default \
