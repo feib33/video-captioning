@@ -127,6 +127,7 @@ class Translator(object):
             v_mask = model_inputs["video_mask"]
             enc_output_s = model_inputs["enc_output_s"]
             s_mask = model_inputs["sub_mask"]
+            encoder_masks = model_inputs["ctx_input_mask"]
         elif self.fusion_pos == "encoder":
             encoder_outputs = model_inputs["encoder_outputs"]
             encoder_masks = model_inputs["ctx_input_mask"]
@@ -136,7 +137,7 @@ class Translator(object):
             text_masks[:, dec_idx] = 1
             if self.fusion_pos == "decoder":
                 _, pred_scores = model.decode_lf(
-                    text_input_ids, text_masks, enc_output_v, v_mask, enc_output_s, s_mask, text_input_labels=None)
+                    text_input_ids, text_masks, enc_output_v, v_mask, enc_output_s, s_mask, encoder_masks, text_input_labels=None)
             elif self.fusion_pos == "encoder":
                 _, pred_scores = model.decode(
                     text_input_ids, text_masks, encoder_outputs, encoder_masks, text_input_labels=None)
@@ -226,21 +227,22 @@ class Translator(object):
         text_input_ids = model_inputs["ctx_tokens"].new_zeros(bsz, max_cap_len)  # zeros
         text_masks = model_inputs["ctx_tokens"].new_zeros(bsz, max_cap_len).float()  # zeros
         next_symbols = torch.LongTensor([start_idx] * bsz)  # (N, )
+        encoder_masks = model_inputs["ctx_input_mask"]
         if fusion_pos == "decoder":
             enc_output_v = model_inputs["enc_output_v"]
             v_mask = model_inputs["video_mask"]
             enc_output_s = model_inputs["enc_output_s"]
             s_mask = model_inputs["sub_mask"]
+
         elif fusion_pos == "encoder":
             encoder_outputs = model_inputs["encoder_outputs"]
-            encoder_masks = model_inputs["ctx_input_mask"]
 
         for dec_idx in range(max_cap_len):
             text_input_ids[:, dec_idx] = next_symbols
             text_masks[:, dec_idx] = 1
             if  fusion_pos == "decoder":
                 _, pred_scores = model.decode_lf(
-                    text_input_ids, text_masks, enc_output_v, v_mask, enc_output_s, s_mask, text_input_labels=None)
+                    text_input_ids, text_masks, enc_output_v, v_mask, enc_output_s, s_mask, encoder_masks, text_input_labels=None)
             elif fusion_pos == "encoder":
                 _, pred_scores = model.decode(
                     text_input_ids, text_masks, encoder_outputs, encoder_masks, text_input_labels=None)
