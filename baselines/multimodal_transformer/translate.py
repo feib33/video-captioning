@@ -111,7 +111,8 @@ def main():
 
     opt = parser.parse_args()
     opt.cuda = not opt.no_cuda
-
+    if opt.model_name == "2streams_dec":
+        opt.fusion_pos = "decoder"
     # random seed
     random.seed(opt.seed)
     np.random.seed(opt.seed)

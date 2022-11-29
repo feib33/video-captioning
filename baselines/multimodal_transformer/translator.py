@@ -137,7 +137,7 @@ class Translator(object):
             text_masks[:, dec_idx] = 1
             if self.fusion_pos == "decoder":
                 _, pred_scores = model.decode_lf(
-                    text_input_ids, text_masks, enc_output_v, v_mask, enc_output_s, s_mask, encoder_masks, text_input_labels=None)
+                    text_input_ids, text_masks, enc_output_v, v_mask, enc_output_s, s_mask, text_input_labels=None)
             elif self.fusion_pos == "encoder":
                 _, pred_scores = model.decode(
                     text_input_ids, text_masks, encoder_outputs, encoder_masks, text_input_labels=None)
@@ -242,7 +242,7 @@ class Translator(object):
             text_masks[:, dec_idx] = 1
             if  fusion_pos == "decoder":
                 _, pred_scores = model.decode_lf(
-                    text_input_ids, text_masks, enc_output_v, v_mask, enc_output_s, s_mask, encoder_masks, text_input_labels=None)
+                    text_input_ids, text_masks, enc_output_v, v_mask, enc_output_s, s_mask, text_input_labels=None)
             elif fusion_pos == "encoder":
                 _, pred_scores = model.decode(
                     text_input_ids, text_masks, encoder_outputs, encoder_masks, text_input_labels=None)
