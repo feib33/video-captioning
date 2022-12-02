@@ -143,7 +143,7 @@ def train(model, training_data, validation_data, opt):
     prev_best_score = 0.
     es_cnt = 0
     for epoch_i in range(opt.n_epoch):
-        logger.info("[Epoch {}]".format(epoch_i))
+        logger.info("[Epoch {} - {}]".format(epoch_i, opt.model_name))
 
         start = time.time()
         train_loss, train_acc = train_epoch(model, training_data, optimizer, opt, epoch_i)

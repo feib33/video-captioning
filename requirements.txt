@@ -1,7 +1,9 @@
 python==2.7.18
 pytorch==1.1.0 py2.7_cuda10.0.130_cudnn7.5.1_0
-nltk==3.4.5
+nltk==3.4.5 import nltk; nltk.download("punkt")
 easydict==1.9
 tqdm==4.64.0
 h5py==2.10.0
 tensorboardX==2.1
+
+pycocoeval - java 1.8.0
