@@ -223,6 +223,10 @@ def get_args():
     parser.add_argument("-layer_norm_eps", type=float, default=1e-12)
     parser.add_argument("-hidden_dropout_prob", type=float, default=0.1)
     parser.add_argument("-num_hidden_layers", type=int, default=2, help="number of transformer layers")
+    parser.add_argument("-num_vid_enc_layers", type=int, default=2, help="number of encoder layers at video stream")
+    parser.add_argument("-num_sub_enc_layers", type=int, default=3, help="number of encoder layers at subtitle stream")
+
+
     parser.add_argument("-attention_probs_dropout_prob", type=float, default=0.1)
     parser.add_argument("-num_attention_heads", type=int, default=12)
     parser.add_argument("-initializer_range", type=float, default=0.02)
@@ -388,6 +392,8 @@ def main():
         layer_norm_eps=opt.layer_norm_eps,  # bert layernorm
         hidden_dropout_prob=opt.hidden_dropout_prob,  # applies everywhere except attention
         num_hidden_layers=opt.num_hidden_layers,  # number of transformer layers
+        num_vid_enc_layers=opt.num_vid_enc_layers,
+        num_sub_enc_layers=opt.num_sub_enc_layers,
         num_attention_heads=opt.num_attention_heads,
         attention_probs_dropout_prob=opt.attention_probs_dropout_prob,  # applies only to self attention
         initializer_range=opt.initializer_range,

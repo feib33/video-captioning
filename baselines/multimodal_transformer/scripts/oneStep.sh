@@ -2,7 +2,8 @@
 
 ctx_mode=video_sub  # [video, sub, video_sub]
 vid_feat_type=resnet_i3d  # [resnet, i3d, resnet_i3d]
-model_names=('2to1stream_self' '2to1stream_cross' '2streams_self' '2streams_cross' '2streams_dec')
+memo=$1
+model_names=('2streams_dec')
 
 max_v_len=20
 max_sub_len=30
@@ -58,6 +59,7 @@ do
     -vid_feat_size ${vid_feat_size} \
     -res_root_dir ${results_root} \
     -model_name ${name} \
+    -memo ${memo} \
     ${extra_args[@]} \
     ${@:3}
 done
@@ -76,10 +78,11 @@ for name in "${model_names[@]}"
 do
     echo "Validating time for model ${name}"
     python baselines/multimodal_transformer/translate.py \
-    -res_dir=${results_root}/${name}-default \
+    -res_dir=${results_root}/${name}-${memo} \
     -eval_split_name=${split_name} \
     -eval_path=${eval_path} \
     -model_name=${name} \
+    -memo=${memo} \
     ${extra_args[@]} \
     ${@:3}
 done

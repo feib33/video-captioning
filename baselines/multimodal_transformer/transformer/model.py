@@ -403,21 +403,26 @@ class BertEncoderNoMemoryUntied(nn.Module):
         all_sub_stream = []
         all_enc_layers = []
         if self.model_name in ["2streams_self", "2streams_dec"]:
-            for layer_idx, (layer_module_v, layer_module_s) in enumerate(zip(self.v_stream, self.s_stream)):
-                vid = layer_module_v(vid, vid_mask, diagonal_mask)
-                sub = layer_module_s(sub, sub_mask, diagonal_mask)
-                if output_all_encoded_layers:
-                    all_vid_stream.append(vid)
-                    all_sub_stream.append(sub)
-                    all_enc_layers.append(torch.cat((vid, sub), 1))
-            if not output_all_encoded_layers:
-                all_vid_stream.append(vid)
-                all_sub_stream.append(sub)
-                all_enc_layers.append(torch.cat((vid, sub), 1))
 
             if self.model_name == "2streams_self":
+                for layer_idx, (layer_module_v, layer_module_s) in enumerate(zip(self.v_stream, self.s_stream)):
+                    vid = layer_module_v(vid, vid_mask, diagonal_mask)
+                    sub = layer_module_s(sub, sub_mask, diagonal_mask)
+                    if output_all_encoded_layers:
+                        all_enc_layers.append(torch.cat((vid, sub), 1))
+                if not output_all_encoded_layers:
+                    all_enc_layers.append(torch.cat((vid, sub), 1))
+
                 return all_enc_layers
             else:
+                for layer_idx, layer_module in enumerate(self.v_stream):
+                    vid = layer_module(vid, vid_mask, diagonal_mask)
+                    if output_all_encoded_layers:
+                        all_vid_stream.append(vid)
+                for layer_idx, layer_module in enumerate(self.s_stream):
+                    sub = layer_module(sub, sub_mask, diagonal_mask)
+                    if output_all_encoded_layers:
+                        all_sub_stream.append(sub)
                 return all_vid_stream, all_sub_stream
 
         elif self.model_name in ["2to1stream_self"]:
@@ -468,9 +473,9 @@ class BertEncoderNoMemoryUntied(nn.Module):
         num_latter_layers = self.config.num_hidden_layers - num_former_layers
         if self.model_name in ["2streams_self", "2streams_dec"]:
             self.v_stream = nn.ModuleList([BertLayerNoMemoryUntied(self.config)
-                                           for _ in range(self.config.num_hidden_layers)])
+                                           for _ in range(self.config.num_vid_enc_layers)])
             self.s_stream = nn.ModuleList([BertLayerNoMemoryUntied(self.config)
-                                           for _ in range(self.config.num_hidden_layers)])
+                                           for _ in range(self.config.num_sub_enc_layers)])
         elif self.model_name in ["2to1stream_self"]:
             self.v_stream = nn.ModuleList([BertLayerNoMemoryUntied(self.config) for _ in range(num_former_layers)])
             self.s_stream = nn.ModuleList([BertLayerNoMemoryUntied(self.config) for _ in range(num_former_layers)])
