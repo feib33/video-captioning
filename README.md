@@ -1,6 +1,7 @@
 This project is modified based on [TVR: A Large-Scale Dataset for Video-Subtitle Moment Retrieval](https://arxiv.org/abs/2001.09099).
 
-The result is improved by processing video features and subtitle features separately and integrating before inputting into the original decoder 
+The result is improved by processing video features and subtitle features separately and integrating before inputting into the original decoder
+
 Result detail will be uploaded soon...
 
 ### TVC Dataset and Task
