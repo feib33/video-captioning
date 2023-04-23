@@ -10,7 +10,7 @@ The TVC dataset can be refered by contacting original auther @jielei
 
 ## Acknowledgement
 
-Thank you for original paper author @jielei who released the source code.
+Thanks for original paper author @jielei who released the source code.
 
 ```
 @inproceedings{lei2020tvr,
